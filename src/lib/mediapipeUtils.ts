@@ -4,17 +4,11 @@ import * as mpHolistic from '@mediapipe/holistic';
 import * as mpDrawingUtils from '@mediapipe/drawing_utils';
 
 const { drawConnectors, drawLandmarks: mpDrawLandmarks } = mpDrawingUtils as any;
-
 const { Holistic, POSE_CONNECTIONS, HAND_CONNECTIONS } = mpHolistic as any;
 
 let holistic: InstanceType<typeof mpHolistic.Holistic> | null = null;
-
-// Store promise resolve function for the onResults callback
 let resolveDetection: ((results: Results) => void) | null = null;
 
-/**
- * Initialize MediaPipe Holistic (Legacy API that perfectly matches Python mp.solutions.holistic)
- */
 export async function initializeMediaPipe(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   
@@ -25,7 +19,6 @@ export async function initializeMediaPipe(): Promise<boolean> {
       }
     });
 
-    // Identik dengan config Python (TestingRealtimeModel.py / CollectionDataset.py)
     holistic?.setOptions({
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5,
@@ -41,7 +34,6 @@ export async function initializeMediaPipe(): Promise<boolean> {
       }
     });
 
-    // Load Wasm and models
     if (holistic) {
       await holistic.initialize();
     }
@@ -54,9 +46,6 @@ export async function initializeMediaPipe(): Promise<boolean> {
   }
 }
 
-/**
- * Detect pose and hand landmarks from video frame using Holistic
- */
 export async function detectPoseLandmarks(
   video: HTMLVideoElement | HTMLCanvasElement,
   timestamp: number
@@ -66,10 +55,8 @@ export async function detectPoseLandmarks(
   try {
     return new Promise((resolve) => {
       resolveDetection = resolve;
-      // Holistic.send expects an HTMLVideoElement, HTMLImageElement, or HTMLCanvasElement
       holistic!.send({ image: video });
       
-      // Safety timeout if Holistic fails to respond
       setTimeout(() => {
         if (resolveDetection === resolve) {
           resolveDetection = null;
@@ -83,16 +70,11 @@ export async function detectPoseLandmarks(
   }
 }
 
-/**
- * Extract keypoints exactly matching Python:
- * pose(132) + left_hand(63) + right_hand(63) = 258 features total
- */
 export function extractKeypoints(detectionResult: Results): Float32Array {
   const keypoints = new Float32Array(KEYPOINTS_CONFIG.TOTAL_FEATURES);
   let featureIndex = 0;
 
   try {
-    // 1. Pose (33 * 4 = 132)
     if (detectionResult.poseLandmarks) {
       for (let i = 0; i < KEYPOINTS_CONFIG.POSE_KEYPOINTS; i++) {
         const lm = detectionResult.poseLandmarks[i];
@@ -105,7 +87,6 @@ export function extractKeypoints(detectionResult: Results): Float32Array {
       featureIndex += KEYPOINTS_CONFIG.POSE_KEYPOINTS * KEYPOINTS_CONFIG.POSE_DIMENSIONS;
     }
 
-    // 2. Left Hand (21 * 3 = 63)
     if (detectionResult.leftHandLandmarks) {
       for (let i = 0; i < KEYPOINTS_CONFIG.LEFT_HAND_KEYPOINTS; i++) {
         const lm = detectionResult.leftHandLandmarks[i];
@@ -117,7 +98,6 @@ export function extractKeypoints(detectionResult: Results): Float32Array {
       featureIndex += KEYPOINTS_CONFIG.LEFT_HAND_KEYPOINTS * KEYPOINTS_CONFIG.HAND_DIMENSIONS;
     }
 
-    // 3. Right Hand (21 * 3 = 63)
     if (detectionResult.rightHandLandmarks) {
       for (let i = 0; i < KEYPOINTS_CONFIG.RIGHT_HAND_KEYPOINTS; i++) {
         const lm = detectionResult.rightHandLandmarks[i];
@@ -136,36 +116,33 @@ export function extractKeypoints(detectionResult: Results): Float32Array {
   }
 }
 
-/**
- * Draw landmarks on canvas
- */
 export function drawLandmarks(
   canvas: HTMLCanvasElement,
   detectionResult: Results,
   showLandmarks: boolean
 ) {
-  if (!showLandmarks) return;
-
   try {
     const canvasCtx = canvas?.getContext('2d');
     if (!canvasCtx) return;
 
-    canvasCtx.save();
+    // Selalu bersihkan canvas di awal frame
     canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw pose landmarks
+    // Jika toggle mati, berhenti di sini (canvas bersih)
+    if (!showLandmarks) return; 
+
+    canvasCtx.save();
+
     if (detectionResult.poseLandmarks) {
       drawConnectors(canvasCtx, detectionResult.poseLandmarks, POSE_CONNECTIONS, { color: 'rgb(80,44,121)', lineWidth: 1 });
       mpDrawLandmarks(canvasCtx, detectionResult.poseLandmarks, { color: 'rgb(80,22,10)', radius: 1 });
     }
 
-    // Draw left hand
     if (detectionResult.leftHandLandmarks) {
       drawConnectors(canvasCtx, detectionResult.leftHandLandmarks, HAND_CONNECTIONS, { color: 'rgb(121,44,250)', lineWidth: 2 });
       mpDrawLandmarks(canvasCtx, detectionResult.leftHandLandmarks, { color: 'rgb(121,22,76)', radius: 4 });
     }
 
-    // Draw right hand
     if (detectionResult.rightHandLandmarks) {
       drawConnectors(canvasCtx, detectionResult.rightHandLandmarks, HAND_CONNECTIONS, { color: 'rgb(245,66,230)', lineWidth: 2 });
       mpDrawLandmarks(canvasCtx, detectionResult.rightHandLandmarks, { color: 'rgb(245,117,66)', radius: 4 });
@@ -177,19 +154,43 @@ export function drawLandmarks(
   }
 }
 
-/**
- * Check if hands are detected
- */
 export function isHandDetected(detectionResult: Results): boolean {
   if (!detectionResult) return false;
   return !!detectionResult.leftHandLandmarks || !!detectionResult.rightHandLandmarks;
 }
 
-/**
- * Get pose visibility (bahu terdeteksi)
- */
 export function isPoseDetected(detectionResult: Results): boolean {
   if (!detectionResult) return false;
   return !!detectionResult.poseLandmarks;
 }
 
+/**
+ * Fitur Kalkulasi Jarak Berdasarkan Bahu
+ * Estimasi focal length standar = 700. (Di python butuh kalibrasi manual, 
+ * tapi untuk web, nilai 700-800 biasanya aman untuk webcam laptop).
+ */
+export function calculateShoulderDistance(
+  detectionResult: Results,
+  imageWidth: number,
+  imageHeight: number,
+  focalLength: number = 700 
+): number {
+  if (!detectionResult || !detectionResult.poseLandmarks) return 0;
+
+  const leftShoulder = detectionResult.poseLandmarks[11];
+  const rightShoulder = detectionResult.poseLandmarks[12];
+
+  if (!leftShoulder || !rightShoulder) return 0;
+
+  const x1 = leftShoulder.x * imageWidth;
+  const y1 = leftShoulder.y * imageHeight;
+  const x2 = rightShoulder.x * imageWidth;
+  const y2 = rightShoulder.y * imageHeight;
+
+  const wPixel = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+
+  if (wPixel < 10) return 0; 
+
+  const W_BAHU = 40; // Rata-rata lebar bahu 40cm
+  return Math.round((W_BAHU * focalLength) / wPixel);
+}

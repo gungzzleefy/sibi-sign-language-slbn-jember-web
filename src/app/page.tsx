@@ -9,6 +9,7 @@ import {
   extractKeypoints,
   drawLandmarks,
   isHandDetected,
+  calculateShoulderDistance
 } from '@/lib/mediapipeUtils';
 import { loadModel, predictGesture, isModelLoaded, disposeModel } from '@/lib/modelUtils';
 import { ACTIONS, SEQUENCE_LENGTH, STABILITY_FRAMES, THRESHOLD } from '@/config/modelConfig';
@@ -18,8 +19,19 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
-  const [isMirrored, setIsMirrored] = useState(true);
   
+  // States untuk pengaturan Kamera & AI
+  const [isMirrored, setIsMirrored] = useState(true);
+  const [showLandmarks, setShowLandmarks] = useState(true);
+  const [distance, setDistance] = useState(0);
+  
+  // Refs untuk sinkronisasi state ke dalam loop requestAnimationFrame (mencegah Stale Closure)
+  const isMirroredRef = useRef(isMirrored);
+  const showLandmarksRef = useRef(showLandmarks);
+  
+  useEffect(() => { isMirroredRef.current = isMirrored; }, [isMirrored]);
+  useEffect(() => { showLandmarksRef.current = showLandmarks; }, [showLandmarks]);
+
   // Video Pagination
   const [videoPage, setVideoPage] = useState(0);
   const [videosPerPage, setVideosPerPage] = useState(3);
@@ -46,9 +58,7 @@ export default function Home() {
   // Offscreen canvas for flipping
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   
-  // Setup Model on mount
   useEffect(() => {
-    // initialize offscreen canvas
     if (!offscreenCanvasRef.current && typeof document !== 'undefined') {
       offscreenCanvasRef.current = document.createElement('canvas');
     }
@@ -59,14 +69,10 @@ export default function Home() {
         setInitError(null);
 
         const mediapipeReady = await initializeMediaPipe();
-        if (!mediapipeReady) {
-          throw new Error('Failed to initialize MediaPipe');
-        }
+        if (!mediapipeReady) throw new Error('Failed to initialize MediaPipe');
 
         const modelReady = await loadModel();
-        if (!modelReady) {
-          throw new Error('Failed to load AI model');
-        }
+        if (!modelReady) throw new Error('Failed to load AI model');
 
         console.log('✅ AI Models ready!');
         setIsLoadingModels(false);
@@ -133,6 +139,7 @@ export default function Home() {
       setStream(null);
       if (videoRef.current) videoRef.current.srcObject = null;
       setIsCameraOn(false);
+      setDistance(0);
       if (animationIdRef.current) cancelAnimationFrame(animationIdRef.current);
       sequenceRef.current = [];
     }
@@ -172,9 +179,8 @@ export default function Home() {
 
       let sourceImage: HTMLVideoElement | HTMLCanvasElement = videoRef.current;
 
-      // Gunakan offscreen canvas yang diinisialisasi 1 kali (sangat optimal tanpa lag)
-      // Ini akan me-mirror gambar SECARA FISIK mirip dengan `cv2.flip(image, 1)` di Python
-      if (isMirrored && offscreenCanvasRef.current) {
+      // Flip fisik untuk MediaPipe (menggunakan isMirroredRef karena di dalam callback)
+      if (isMirroredRef.current && offscreenCanvasRef.current) {
         if (offscreenCanvasRef.current.width !== videoRef.current.videoWidth) {
           offscreenCanvasRef.current.width = videoRef.current.videoWidth;
           offscreenCanvasRef.current.height = videoRef.current.videoHeight;
@@ -194,13 +200,21 @@ export default function Home() {
       const detectionResult = await detectPoseLandmarks(sourceImage, now);
 
       if (detectionResult) {
-        drawLandmarks(canvasRef.current, detectionResult, true);
+        // Kalkulasi jarak
+        const dist = calculateShoulderDistance(detectionResult, canvasRef.current.width, canvasRef.current.height);
+        setDistance(dist);
+        
+        // Gambar Landmarks
+        drawLandmarks(canvasRef.current, detectionResult, showLandmarksRef.current);
+      } else {
+        setDistance(0);
+        // Tetap panggil drawLandmarks untuk membersihkan canvas bila gambar kosong
+        drawLandmarks(canvasRef.current, null as any, showLandmarksRef.current); 
       }
 
       const handsDetected = detectionResult ? isHandDetected(detectionResult) : false;
 
       if (handsDetected && detectionResult) {
-        // Karena canvas sudah di-flip secara fisik, koordinat X tidak perlu ditukar lagi (mirrored=false)
         const keypoints = extractKeypoints(detectionResult); 
         sequenceRef.current.push(keypoints);
         sequenceRef.current = sequenceRef.current.slice(-SEQUENCE_LENGTH);
@@ -220,7 +234,7 @@ export default function Home() {
                 const newGesture = ACTIONS[gestureIndex];
                 setSentence((prev) => {
                   if (prev.length === 0 || prev[prev.length - 1] !== newGesture) {
-                    return [...prev, newGesture].slice(-5); // Keep last 5
+                    return [...prev, newGesture].slice(-5);
                   }
                   return prev;
                 });
@@ -257,7 +271,7 @@ export default function Home() {
     };
   }, [isCameraOn, detectFrame]);
 
-  const targetSoal = ["Saya", "Makan", "Obat"]; // Hardcoded soal according to model for illustration
+  const targetSoal = ["Saya", "Makan", "Obat"]; 
 
   return (
     <div className="min-h-screen w-full font-sans bg-linear-to-b from-blue-50 to-white dark:from-gray-950 dark:to-gray-900">
@@ -293,6 +307,7 @@ export default function Home() {
                   </div>
                 )}
 
+                {/* NOTE: CSS flip (-scale-x-100) TETAP ada di video, tapi DIHAPUS dari canvas */}
                 <video
                   ref={videoRef}
                   autoPlay
@@ -303,7 +318,7 @@ export default function Home() {
                 
                 <canvas
                   ref={canvasRef}
-                  className={`absolute inset-0 w-full h-full object-cover z-10 pointer-events-none transition-transform duration-300 ${isMirrored ? '-scale-x-100' : ''}`}
+                  className="absolute inset-0 w-full h-full object-cover z-10 pointer-events-none"
                 />
 
                 {!isCameraOn && !isLoadingModels && !initError && (
@@ -321,7 +336,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Display Current Prediction / FPS overlay */}
+                {/* Top Left: FPS & AI Status */}
                 {isCameraOn && (
                    <div className="absolute top-4 left-4 z-20 bg-black/60 backdrop-blur text-white px-3 py-2 rounded-xl border border-white/10 shadow-lg text-sm">
                       <div className="font-mono text-xs opacity-70 mb-1">FPS: {stats.fps}</div>
@@ -332,55 +347,72 @@ export default function Home() {
                    </div>
                 )}
 
-                {/* Camera Controls Overlay */}
-                <div className="absolute bottom-0 left-0 w-full px-4 py-3 flex justify-center items-end gap-3 z-20">
+                {/* Top Right: Indikator Jarak UI Sesuai Python */}
+                {isCameraOn && (
+                  <div className="absolute top-4 right-4 z-20 bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10 shadow-lg text-sm flex flex-col items-end min-w-[140px]">
+                    <div className="font-mono text-xs opacity-70 mb-1">
+                      Jarak: {distance > 0 ? `${distance} cm` : '---'}
+                    </div>
+                    <div className={`font-bold ${distance > 0 ? (distance < 50 || distance > 100 ? 'text-red-400' : 'text-green-400') : 'text-gray-400'}`}>
+                      {distance === 0 ? "Bahu Tidak Terdeteksi" : distance < 50 ? "<< MUNDUR!" : distance > 100 ? "MAJU! >>" : "POSISI OK"}
+                    </div>
+                  </div>
+                )}
+
+                {/* Bottom Center: Camera Controls Overlay */}
+                <div className="absolute bottom-0 left-0 w-full px-4 py-3 flex flex-wrap justify-center items-end gap-3 z-20">
                   <button
                     onClick={startCamera}
                     disabled={isCameraOn || isLoadingModels || !!initError}
-                    aria-label="Hidupkan Kamera"
                     className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-white text-xs font-bold shadow transition-all min-w-20 ${
                       isCameraOn || isLoadingModels || !!initError
                         ? "bg-white/20 backdrop-blur cursor-not-allowed opacity-50"
                         : "bg-green-500/80 backdrop-blur hover:bg-green-500 active:scale-95"
                     }`}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
-                      <path fillRule="evenodd" d="M0 5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 4.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 13H2a2 2 0 0 1-2-2z" />
-                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16"><path fillRule="evenodd" d="M0 5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 4.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 13H2a2 2 0 0 1-2-2z" /></svg>
                     <span>Mulai</span>
                   </button>
 
                   <button
                     onClick={stopCamera}
                     disabled={!isCameraOn}
-                    aria-label="Matikan Kamera"
                     className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-white text-xs font-bold shadow transition-all min-w-20 ${
                       !isCameraOn
                         ? "bg-white/20 backdrop-blur cursor-not-allowed opacity-50"
                         : "bg-red-500/80 backdrop-blur hover:bg-red-500 active:scale-95"
                     }`}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
-                      <path fillRule="evenodd" d="M10.961 12.365a2 2 0 0 0 .522-1.103l3.11 1.382A1 1 0 0 0 16 11.731V4.269a1 1 0 0 0-1.406-.913l-3.111 1.382A2 2 0 0 0 9.5 3H4.272zm-10.114-9A2 2 0 0 0 0 5v6a2 2 0 0 0 2 2h5.728zm9.746 11.925-10-14 .814-.58 10 14z" />
-                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16"><path fillRule="evenodd" d="M10.961 12.365a2 2 0 0 0 .522-1.103l3.11 1.382A1 1 0 0 0 16 11.731V4.269a1 1 0 0 0-1.406-.913l-3.111 1.382A2 2 0 0 0 9.5 3H4.272zm-10.114-9A2 2 0 0 0 0 5v6a2 2 0 0 0 2 2h5.728zm9.746 11.925-10-14 .814-.58 10 14z" /></svg>
                     <span>Berhenti</span>
                   </button>
 
                   <button
                     onClick={() => setIsMirrored(!isMirrored)}
                     disabled={!isCameraOn}
-                    aria-label="Toggle Mirror Camera"
                     className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-white text-xs font-bold shadow transition-all min-w-20 ${
                       !isCameraOn
                         ? "bg-white/20 backdrop-blur cursor-not-allowed opacity-50"
                         : "bg-blue-500/80 backdrop-blur hover:bg-blue-500 active:scale-95"
                     }`}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
-                      <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41m-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9" />
-                      <path fillRule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5 5 0 0 0 8 3" />
-                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16"><path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41m-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9" /><path fillRule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5 5 0 0 0 8 3" /></svg>
                     <span>Mirror: {isMirrored ? "ON" : "OFF"}</span>
+                  </button>
+
+                  <button
+                    onClick={() => setShowLandmarks(!showLandmarks)}
+                    disabled={!isCameraOn}
+                    className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl text-white text-xs font-bold shadow transition-all min-w-20 ${
+                      !isCameraOn
+                        ? "bg-white/20 backdrop-blur cursor-not-allowed opacity-50"
+                        : showLandmarks 
+                          ? "bg-purple-500/80 backdrop-blur hover:bg-purple-500 active:scale-95" 
+                          : "bg-gray-500/80 backdrop-blur hover:bg-gray-500 active:scale-95"
+                    }`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16"><path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0"/><path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8m8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7"/></svg>
+                    <span>Titik: {showLandmarks ? "ON" : "OFF"}</span>
                   </button>
                 </div>
               </div>

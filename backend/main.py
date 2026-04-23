@@ -59,7 +59,7 @@ SEQUENCE_LENGTH = 45
 # Path model (.keras) yang berada di public folder NextJS
 # Karena backend berjalan di folder /backend, parent dir adalah frontend
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.path.join(BASE_DIR, "public", "models", "saya_makan_obat.keras")
+MODEL_PATH = os.path.join(BASE_DIR, "public", "models", "3class.keras")
 
 # Global variables
 model = None
@@ -142,4 +142,4 @@ async def websocket_predict(websocket: WebSocket):
         print(f"[ERROR] WebSocket: {e}")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -9,7 +9,7 @@ export const SEQUENCE_LENGTH = 45;
 
 export const THRESHOLD = 0.80; // 80% confidence minimum
 
-export const STABILITY_FRAMES = 12; // Frames untuk stabilisasi prediksi
+export const STABILITY_FRAMES = 4; // Frames untuk stabilisasi prediksi
 
 export const MODEL_PATH = '/models/tfjs_model/model.json';
 

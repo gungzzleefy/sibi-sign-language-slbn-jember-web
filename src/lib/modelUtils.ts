@@ -1,4 +1,4 @@
-import { MODEL_PATH, SEQUENCE_LENGTH, THRESHOLD, ACTIONS } from '@/config/modelConfig';
+import { SEQUENCE_LENGTH, ACTIONS } from '@/config/modelConfig';
 
 let ws: WebSocket | null = null;
 let isConnected = false;
@@ -11,24 +11,35 @@ let pendingPredicts: Array<(value: any) => void> = [];
 export async function loadModel(): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      console.log(`🔄 Menghubungkan ke API Backend WebSocket...`);
-      // Use dynamic hostname so accessing from mobile phone (e.g., 192.168.x.x) works properly
-      const hostname = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-      ws = new WebSocket(`ws://${hostname}:8000/ws/predict`);
-      
+      // Guard: jangan jalankan di SSR (server-side Next.js)
+      if (typeof window === 'undefined') {
+        console.warn('⚠️ loadModel dipanggil di server-side, skip.');
+        resolve(false);
+        return;
+      }
+
+      // Dynamic hostname: otomatis pakai IP yang sama dengan frontend
+      // Jadi kalau akses dari 192.168.1.15:3000, ws juga ke 192.168.1.15:8000
+      const hostname = window.location.hostname;
+      const wsUrl = `ws://${hostname}:8000/ws/predict`;
+
+      console.log(`🔄 Menghubungkan ke Backend WebSocket: ${wsUrl}`);
+
+      ws = new WebSocket(wsUrl);
+
       ws.onopen = () => {
         console.log('✅ WebSocket Terhubung ke Backend AI!');
         isConnected = true;
         resolve(true);
       };
-      
+
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           const resolveFn = pendingPredicts.shift();
-          
+
           if (!resolveFn) return;
-          
+
           if (data.error) {
             console.error('API Error:', data.error);
             resolveFn({
@@ -39,10 +50,10 @@ export async function loadModel(): Promise<boolean> {
             });
             return;
           }
-          
+
           if (data.prediction) {
             const bestIndex = ACTIONS.indexOf(data.prediction);
-            
+
             resolveFn({
               predictions: [bestIndex !== -1 ? bestIndex : 0],
               confidence: data.confidence,
@@ -64,9 +75,10 @@ export async function loadModel(): Promise<boolean> {
         console.log('❌ WebSocket Terputus dari Backend');
         isConnected = false;
         ws = null;
-        resolve(false);
+        // Jangan resolve(false) di sini kalau sudah pernah resolve(true)
+        // karena Promise hanya bisa resolve sekali
       };
-      
+
     } catch (error) {
       console.error('❌ Gagal Connect WebSocket:', error);
       resolve(false);
@@ -102,12 +114,12 @@ export async function predictGesture(
 
   return new Promise((resolve) => {
     pendingPredicts.push(resolve);
-    
-    // Ubah format float32 dari mediapipe jadi standard numeric array JS -> string json API backend
-    const sequenceData = sequence.map(frame => Array.from(frame));
+
+    // Ubah format float32 dari mediapipe jadi standard numeric array JS -> JSON ke API backend
+    const sequenceData = sequence.map((frame) => Array.from(frame));
     ws?.send(JSON.stringify({ sequence: sequenceData }));
-    
-    // Time out pelindung kalau backend mati
+
+    // Timeout pelindung kalau backend tidak merespons
     setTimeout(() => {
       const idx = pendingPredicts.indexOf(resolve);
       if (idx !== -1) {
@@ -124,14 +136,14 @@ export async function predictGesture(
 }
 
 /**
- * Check if model is loaded
+ * Check if model/websocket sudah terhubung
  */
 export function isModelLoaded(): boolean {
   return isConnected && ws !== null && ws.readyState === WebSocket.OPEN;
 }
 
 /**
- * Dispose model untuk cleanup
+ * Dispose model untuk cleanup (panggil saat komponen unmount)
  */
 export function disposeModel(): void {
   if (ws && ws.readyState === WebSocket.OPEN) {
