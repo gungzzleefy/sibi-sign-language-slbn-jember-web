@@ -1,9 +1,9 @@
 /**
  * Model Configuration
- * Sesuai dengan training model: saya_makan_obat.keras
+ * Sesuai dengan training model: model7class.keras
  */
 
-export const ACTIONS = ['Saya', 'Makan', 'Obat'];
+export const ACTIONS = ['Saya', 'Makan', 'Obat', 'Agar', 'Kuat', 'Buah', 'Sayur'];
 
 export const SEQUENCE_LENGTH = 45;
 

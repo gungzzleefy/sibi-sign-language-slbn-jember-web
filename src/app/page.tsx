@@ -271,7 +271,7 @@ export default function Home() {
     };
   }, [isCameraOn, detectFrame]);
 
-  const targetSoal = ["Saya", "Makan", "Obat"]; 
+  const targetSoal = ['Saya', 'Makan', 'Obat', 'Agar', 'Kuat', 'Buah', 'Sayur'];
 
   return (
     <div className="min-h-screen w-full font-sans bg-linear-to-b from-blue-50 to-white dark:from-gray-950 dark:to-gray-900">
