@@ -3,7 +3,11 @@
  * Sesuai dengan training model: model7class.keras
  */
 
-export const ACTIONS = ['Saya', 'Makan', 'Obat', 'Agar', 'Kuat', 'Buah', 'Sayur'];
+export const ACTIONS = [
+  'Saya', 'Makan', 'Obat', 'Agar', 'Kuat', 'Buah', 'Sayur',
+  'Ibu', 'An', 'Sabar', 'Siap', 'Gelas', 'Harus', 'Kakak',
+  'Kan', 'Kue', 'Malam', 'Rajin', 'Siram', 'Untuk',
+];
 
 export const SEQUENCE_LENGTH = 45;
 

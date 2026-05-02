@@ -9,6 +9,20 @@ import keras
 from keras.layers import Layer
 import uvicorn
 
+# ==================== PATCH KOMPATIBILITAS KERAS ====================
+# Model disimpan dengan Keras versi lebih baru yang menyertakan
+# `quantization_config` di Dense. Versi terpasang tidak mengenali field
+# tersebut, sehingga perlu dihapus saat deserialisasi.
+_dense_from_config_orig = keras.layers.Dense.from_config.__func__
+
+@classmethod  # type: ignore[misc]
+def _dense_from_config_patched(cls, config):
+    config = dict(config)
+    config.pop('quantization_config', None)
+    return _dense_from_config_orig(cls, config)
+
+keras.layers.Dense.from_config = _dense_from_config_patched
+
 # ==================== PENGATURAN AWAL ====================
 app = FastAPI(title="SIBI SPOK Realtime Backend - 20 Kelas")
 
@@ -82,6 +96,7 @@ MODEL_PATH = os.path.join(BASE_DIR, "public", "models", "model20class.keras")
 model = None
 
 # ==================== STARTUP EVENT ====================
+# ==================== STARTUP EVENT ====================
 @app.on_event("startup")
 async def load_model_on_startup():
     global model
@@ -89,11 +104,18 @@ async def load_model_on_startup():
 
     if os.path.exists(MODEL_PATH):
         try:
+            # === PERUBAHAN ADA DI SINI ===
+            # Kita gunakan compile=False agar Keras tidak mencoba merekonstruksi
+            # optimizer (AdamW) dan custom loss (FocalLossWithSmoothing).
+            # Kita tetap harus meregister AttentionLayer karena itu adalah 
+            # bagian dari arsitektur jaringannya (layer).
             model = tf.keras.models.load_model(
                 MODEL_PATH,
+                compile=False,  # <-- KUNCI SOLUSINYA
                 custom_objects={
                     'AttentionLayer': AttentionLayer,
-                    'FocalLossWithSmoothing': FocalLossWithSmoothing,
+                    # Hapus FocalLossWithSmoothing dari custom_objects
+                    # karena tidak lagi dibutuhkan saat compile=False
                 }
             )
             print("[INFO] Model 20 kelas berhasil dimuat.")
