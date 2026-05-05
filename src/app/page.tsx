@@ -16,7 +16,7 @@ import {
   predictGesture,
   isModelLoaded,
   disposeModel,
-} from "@/lib/modelUtils";
+} from "@/lib/tfjsModelUtils";
 import {
   ACTIONS,
   SEQUENCE_LENGTH,
@@ -126,6 +126,9 @@ export default function Home() {
   const isMirroredRef = useRef(isMirrored);
   const showLandmarksRef = useRef(showLandmarks);
 
+  // Hook ini harus di dalam komponen! (Digunakan untuk membatasi lag rendering UI FPS)
+  const lastUiUpdateTimeRef = useRef<number>(0);
+
   useEffect(() => {
     isMirroredRef.current = isMirrored;
   }, [isMirrored]);
@@ -156,7 +159,7 @@ export default function Home() {
   const [showSentencePicker, setShowSentencePicker] = useState(false);
 
   const [wordConfidences, setWordConfidences] = useState<number[]>(
-    Array(SPOK_SENTENCES[0].words.length).fill(0)
+    Array(SPOK_SENTENCES[0].words.length).fill(0),
   );
 
   // Refs for detection loop
@@ -323,11 +326,15 @@ export default function Home() {
       lastFrameTimeRef.current = now;
 
       frameCountRef.current++;
-      if (deltaTime > 0) {
+      
+      // 🚀 OPTIMASI 1: THROTTLE REACT STATE UNTUK FPS
+      // Update UI FPS dan hitungan frame maksimal ~3 kali per detik (setiap 300ms)
+      if (deltaTime > 0 && now - lastUiUpdateTimeRef.current > 300) {
         setStats({
           frames: frameCountRef.current,
           fps: Math.round(1000 / deltaTime),
         });
+        lastUiUpdateTimeRef.current = now;
       }
 
       canvasRef.current.width = videoRef.current.videoWidth;
@@ -366,7 +373,12 @@ export default function Home() {
           canvasRef.current.width,
           canvasRef.current.height,
         );
-        setDistance(dist);
+        
+        // Membatasi update distance agar tidak terlalu sering menyebabkan re-render
+        if (Math.abs(distance - dist) > 2) {
+             setDistance(dist);
+        }
+        
         drawLandmarks(
           canvasRef.current,
           detectionResult,
@@ -387,124 +399,125 @@ export default function Home() {
         sequenceRef.current = sequenceRef.current.slice(-SEQUENCE_LENGTH);
 
         if (sequenceRef.current.length === SEQUENCE_LENGTH) {
-          const result = await predictGesture(sequenceRef.current);
+          
+          // 🚀 OPTIMASI 2: INFERENCE SKIPPING
+          // Jalankan model TF.js AI hanya setiap 4 frame untuk menghemat resource GPU
+          if (frameCountRef.current % 4 === 0) {
+            const result = await predictGesture(sequenceRef.current);
 
-          if (result.predictions.length > 0) {
-            const gestureIndex = result.predictions[0];
-            predictionBufferRef.current.push(gestureIndex);
-            predictionBufferRef.current =
-              predictionBufferRef.current.slice(-STABILITY_FRAMES);
+            if (result.predictions.length > 0) {
+              const gestureIndex = result.predictions[0];
+              predictionBufferRef.current.push(gestureIndex);
+              predictionBufferRef.current = predictionBufferRef.current.slice(-STABILITY_FRAMES);
 
-            if (predictionBufferRef.current.length === STABILITY_FRAMES) {
-              const allSame = predictionBufferRef.current.every(
-                (p) => p === predictionBufferRef.current[0],
-              );
+              if (predictionBufferRef.current.length === STABILITY_FRAMES) {
+                const allSame = predictionBufferRef.current.every(
+                  (p) => p === predictionBufferRef.current[0],
+                );
 
-              if (allSame && result.confidence > THRESHOLD) {
-                const nowMs = performance.now();
-                const inCooldown =
-                  nowMs - lastDetectionTimeRef.current < DETECTION_COOLDOWN_MS;
+                if (allSame && result.confidence > THRESHOLD) {
+                  const nowMs = performance.now();
+                  const inCooldown =
+                    nowMs - lastDetectionTimeRef.current < DETECTION_COOLDOWN_MS;
 
-                if (!inCooldown) {
-                  const newGesture = ACTIONS[gestureIndex];
-                  const sentenceData =
-                    SPOK_SENTENCES[currentSentenceIdxRef.current];
+                  if (!inCooldown) {
+                    const newGesture = ACTIONS[gestureIndex];
+                    const sentenceData = SPOK_SENTENCES[currentSentenceIdxRef.current];
 
-                  // KUNCI SOLUSINYA: Simpan index ke variabel statis sebelum diproses
-                  const targetIdx = currentWordIdxRef.current;
-                  const expectedWord = sentenceData.words[targetIdx]?.word;
+                    const targetIdx = currentWordIdxRef.current;
+                    const expectedWord = sentenceData.words[targetIdx]?.word;
 
-                  if (newGesture === expectedWord) {
-  // 1. JIKA BENAR: Update hijau, pindah ke kata selanjutnya, & RESET AI
-  lastDetectionTimeRef.current = nowMs;
-  predictionBufferRef.current = [];
-  sequenceRef.current = [];
+                    if (newGesture === expectedWord) {
+                      // JIKA BENAR: Update hijau
+                      lastDetectionTimeRef.current = nowMs;
+                      predictionBufferRef.current = [];
+                      sequenceRef.current = [];
 
-  // 👇 1. AMBIL NILAI AKURASI (dijadikan persentase bulat) 👇
-  const currentConf = Math.round(result.confidence * 100);
+                      const currentConf = Math.round(result.confidence * 100);
 
-  // Gunakan `targetIdx` yang sudah dikunci, BUKAN `currentWordIdxRef.current`
-  setWordStatuses((prev) => {
-    const updated = [...prev];
-    updated[targetIdx] = "correct";
-    return updated;
-  });
+                      setWordStatuses((prev) => {
+                        const updated = [...prev];
+                        updated[targetIdx] = "correct";
+                        return updated;
+                      });
 
-  // 👇 2. SIMPAN AKURASI KE STATE 👇
-  setWordConfidences((prev) => {
-    const updated = [...prev];
-    updated[targetIdx] = currentConf;
-    return updated;
-  });
+                      setWordConfidences((prev) => {
+                        const updated = [...prev];
+                        updated[targetIdx] = currentConf;
+                        return updated;
+                      });
 
-  const newWordIdx = targetIdx + 1;
+                      const newWordIdx = targetIdx + 1;
 
-  if (newWordIdx >= sentenceData.words.length) {
-    // Kalimat selesai — lanjut ke berikutnya
-    const nextIdx =
-      (currentSentenceIdxRef.current + 1) %
-      SPOK_SENTENCES.length;
-    currentSentenceIdxRef.current = nextIdx;
-    currentWordIdxRef.current = 0;
-    setTimeout(() => {
-      setCurrentSentenceIdx(nextIdx);
-      setCurrentWordIdx(0);
-      setWordStatuses(
-        Array(SPOK_SENTENCES[nextIdx].words.length).fill(
-          "pending",
-        ),
-      );
-      // 👇 3. RESET AKURASI UNTUK SOAL BARU 👇
-      setWordConfidences(
-        Array(SPOK_SENTENCES[nextIdx].words.length).fill(0)
-      );
-    }, 1200);
-  } else {
-    // Majukan index setelah kita yakin UI sebelumnya di-update dengan index yang benar
-    currentWordIdxRef.current = newWordIdx;
-    setCurrentWordIdx(newWordIdx);
-  }
-} else {
-  // 2. JIKA SALAH: Bikin UI Merah, TAPI AI tetap jalan terus
-  lastDetectionTimeRef.current = nowMs;
-  triggerWrongToastRef.current();
+                      if (newWordIdx >= sentenceData.words.length) {
+                        const nextIdx =
+                          (currentSentenceIdxRef.current + 1) %
+                          SPOK_SENTENCES.length;
+                        currentSentenceIdxRef.current = nextIdx;
+                        currentWordIdxRef.current = 0;
+                        setTimeout(() => {
+                          setCurrentSentenceIdx(nextIdx);
+                          setCurrentWordIdx(0);
+                          setWordStatuses(
+                            Array(SPOK_SENTENCES[nextIdx].words.length).fill(
+                              "pending",
+                            ),
+                          );
+                          setWordConfidences(
+                            Array(SPOK_SENTENCES[nextIdx].words.length).fill(0),
+                          );
+                        }, 1200);
+                      } else {
+                        currentWordIdxRef.current = newWordIdx;
+                        setCurrentWordIdx(newWordIdx);
+                      }
+                    } else {
+                      // JIKA SALAH: Tampilkan UI merah
+                      lastDetectionTimeRef.current = nowMs;
+                      triggerWrongToastRef.current();
 
-  setWordStatuses((prev) => {
-    const updated = [...prev];
-    // Pastikan menggunakan targetIdx yang dikunci juga
-    if (updated[targetIdx] !== "correct") {
-      updated[targetIdx] = "wrong";
-    }
-    return updated;
-  });
-}
+                      setWordStatuses((prev) => {
+                        const updated = [...prev];
+                        if (updated[targetIdx] !== "correct") {
+                          updated[targetIdx] = "wrong";
+                        }
+                        return updated;
+                      });
+                    }
+                  }
                 }
               }
-            }
 
-            setPredictions({
-              gesture: ACTIONS[gestureIndex],
-              confidence: result.confidence,
-              allProbabilities: result.allProbabilities,
-              detected: true,
-            });
+              // Update prediksi (Kondisi sudah di dalam block frame-skipping, sehingga update State sangat efisien)
+              setPredictions({
+                gesture: ACTIONS[gestureIndex],
+                confidence: result.confidence,
+                allProbabilities: result.allProbabilities,
+                detected: true,
+              });
+            }
           }
         }
       } else {
         sequenceRef.current = [];
         predictionBufferRef.current = [];
-        setPredictions((prev) => ({
-          ...prev,
-          detected: false,
-          gesture: "Menunggu tangan...",
-        }));
+        
+        // Cek agar tidak me-render state berulang kali jika sudah false
+        setPredictions((prev) => {
+          if (!prev.detected) return prev;
+          return {
+            ...prev,
+            detected: false,
+            gesture: "Menunggu tangan...",
+          };
+        });
       }
     } catch (error) {
       console.error("Frame processing error:", error);
     }
 
     animationIdRef.current = requestAnimationFrame(detectFrame);
-  }, [isCameraOn]);
+  }, [isCameraOn, distance]); 
 
   useEffect(() => {
     if (isCameraOn && isModelLoaded()) {
@@ -814,7 +827,9 @@ export default function Home() {
                       setWordStatuses(
                         Array(currentSentence.words.length).fill("pending"),
                       );
-                      setWordConfidences(Array(currentSentence.words.length).fill(0));
+                      setWordConfidences(
+                        Array(currentSentence.words.length).fill(0),
+                      );
                       sequenceRef.current = [];
                       predictionBufferRef.current = [];
                     }}
@@ -1067,26 +1082,29 @@ export default function Home() {
                     }
 
                     return (
-                     <span key={i} className={baseClass}>
-      <span className="text-[9px] uppercase opacity-50 mr-0.5">
-        {wordObj.role}
-      </span>
-      {wordObj.word}
-      
-      {/* 👇 UBAH BAGIAN TANDA CENTANG JADI SEPERTI INI 👇 */}
-      {status === "correct" && (
-        <>
-          <span className="ml-1.5 text-[10px] font-black px-1.5 py-0.5 rounded-md bg-green-200 dark:bg-green-800/60 text-green-800 dark:text-green-200">
-            {wordConfidences[i]}%
-          </span>
-          <span className="ml-1 text-green-600 dark:text-green-400 font-black">✓</span>
-        </>
-      )}
-      
-      {status === "wrong" && (
-        <span className="ml-1 text-red-500 font-black">✗</span>
-      )}
-    </span>
+                      <span key={i} className={baseClass}>
+                        <span className="text-[9px] uppercase opacity-50 mr-0.5">
+                          {wordObj.role}
+                        </span>
+                        {wordObj.word}
+
+                        {status === "correct" && (
+                          <>
+                            <span className="ml-1.5 text-[10px] font-black px-1.5 py-0.5 rounded-md bg-green-200 dark:bg-green-800/60 text-green-800 dark:text-green-200">
+                              {wordConfidences[i]}%
+                            </span>
+                            <span className="ml-1 text-green-600 dark:text-green-400 font-black">
+                              ✓
+                            </span>
+                          </>
+                        )}
+
+                        {status === "wrong" && (
+                          <span className="ml-1 text-red-500 font-black">
+                            ✗
+                          </span>
+                        )}
+                      </span>
                     );
                   })}
                 </div>
