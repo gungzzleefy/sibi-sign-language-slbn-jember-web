@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const HF_API_URL = "https://agungkurniawanid-sibi-sign-slbn-jember-recognition-backend.hf.space/predict";
+const HF_API_URL = "https://agungkurniawanid-sibi-sign-slbn-jember-recogniti-79632ba.hf.space/predict";
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
       const response = await fetch(HF_API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(body)
       });
 
       console.log(`[PROXY] Attempt ${attempt} - Status: ${response.status}, Content-Type: ${response.headers.get("content-type")}`);
