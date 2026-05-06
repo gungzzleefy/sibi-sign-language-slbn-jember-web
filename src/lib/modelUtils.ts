@@ -1,89 +1,9 @@
 import { SEQUENCE_LENGTH, ACTIONS } from '@/config/modelConfig';
 
-let ws: WebSocket | null = null;
-let isConnected = false;
-
-/**
- * Promise store for pending prediction requests
- */
-let pendingPredicts: Array<(value: any) => void> = [];
-
 export async function loadModel(): Promise<boolean> {
-  return new Promise((resolve) => {
-    try {
-      // Guard: jangan jalankan di SSR (server-side Next.js)
-      if (typeof window === 'undefined') {
-        console.warn('⚠️ loadModel dipanggil di server-side, skip.');
-        resolve(false);
-        return;
-      }
-
-      // Dynamic hostname: otomatis pakai IP yang sama dengan frontend
-      // Jadi kalau akses dari 192.168.1.15:3000, ws juga ke 192.168.1.15:8000
-      const hostname = window.location.hostname;
-      const wsUrl = `ws://${hostname}:8000/ws/predict`;
-
-      console.log(`🔄 Menghubungkan ke Backend WebSocket: ${wsUrl}`);
-
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        console.log('✅ WebSocket Terhubung ke Backend AI!');
-        isConnected = true;
-        resolve(true);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const resolveFn = pendingPredicts.shift();
-
-          if (!resolveFn) return;
-
-          if (data.error) {
-            console.error('API Error:', data.error);
-            resolveFn({
-              predictions: [],
-              confidence: 0,
-              gesture: 'API Error',
-              allProbabilities: [],
-            });
-            return;
-          }
-
-          if (data.prediction) {
-            const bestIndex = ACTIONS.indexOf(data.prediction);
-
-            resolveFn({
-              predictions: [bestIndex !== -1 ? bestIndex : 0],
-              confidence: data.confidence,
-              gesture: data.prediction,
-              allProbabilities: data.probabilities || [],
-            });
-          }
-        } catch (err) {
-          console.error('Gagal membaca balasan WebSocket:', err);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('❌ WebSocket Error:', error);
-        if (!isConnected) resolve(false);
-      };
-
-      ws.onclose = () => {
-        console.log('❌ WebSocket Terputus dari Backend');
-        isConnected = false;
-        ws = null;
-        // Jangan resolve(false) di sini kalau sudah pernah resolve(true)
-        // karena Promise hanya bisa resolve sekali
-      };
-
-    } catch (error) {
-      console.error('❌ Gagal Connect WebSocket:', error);
-      resolve(false);
-    }
-  });
+  // Karena kita pakai REST API, kita anggap model selalu siap dihubungi.
+  // Tidak perlu lagi memelihara koneksi WebSocket yang sering putus!
+  return true; 
 }
 
 export async function predictGesture(
@@ -94,15 +14,6 @@ export async function predictGesture(
   gesture: string;
   allProbabilities: number[];
 }> {
-  if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) {
-    return {
-      predictions: [],
-      confidence: 0,
-      gesture: 'Koneksi Terputus',
-      allProbabilities: [],
-    };
-  }
-
   if (sequence.length < SEQUENCE_LENGTH) {
     return {
       predictions: [],
@@ -112,44 +23,62 @@ export async function predictGesture(
     };
   }
 
-  return new Promise((resolve) => {
-    pendingPredicts.push(resolve);
-
-    // Ubah format float32 dari mediapipe jadi standard numeric array JS -> JSON ke API backend
+  try {
     const sequenceData = sequence.map((frame) => Array.from(frame));
-    ws?.send(JSON.stringify({ sequence: sequenceData }));
+    const apiUrl = "/api/predict";
 
-    // Timeout pelindung kalau backend tidak merespons
-    setTimeout(() => {
-      const idx = pendingPredicts.indexOf(resolve);
-      if (idx !== -1) {
-        pendingPredicts.splice(idx, 1);
-        resolve({
-          predictions: [],
-          confidence: 0,
-          gesture: 'Timeout API',
-          allProbabilities: [],
-        });
-      }
-    }, 1000);
-  });
-}
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sequence: sequenceData })
+    });
 
-/**
- * Check if model/websocket sudah terhubung
- */
-export function isModelLoaded(): boolean {
-  return isConnected && ws !== null && ws.readyState === WebSocket.OPEN;
-}
+    // 👇 KUNCI SOLUSINYA: Cek apakah server membalas dengan HTML (Error/Loading Screen)
+    const contentType = response.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      // Intip isi HTML-nya sedikit untuk tahu apa masalah di server
+      const textResponse = await response.text();
+      console.error("❌ Server tidak membalas JSON. Balasan:", textResponse.substring(0, 150));
+      return { 
+        predictions: [], 
+        confidence: 0, 
+        gesture: 'Server AI Loading/Sibuk...', 
+        allProbabilities: [] 
+      };
+    }
 
-/**
- * Dispose model untuk cleanup (panggil saat komponen unmount)
- */
-export function disposeModel(): void {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close();
+    const data = await response.json();
+
+    if (data.error) {
+      console.error('API Error:', data.error);
+      return { predictions: [], confidence: 0, gesture: 'API Error', allProbabilities: [] };
+    }
+
+    const bestIndex = ACTIONS.indexOf(data.prediction);
+
+    return {
+      predictions: [bestIndex !== -1 ? bestIndex : 0],
+      confidence: data.confidence,
+      gesture: data.prediction,
+      allProbabilities: data.probabilities || [],
+    };
+
+  } catch (error) {
+    console.error("Gagal mengirim prediksi:", error);
+    return {
+      predictions: [],
+      confidence: 0,
+      gesture: 'Gagal Konek Server',
+      allProbabilities: [],
+    };
   }
-  ws = null;
-  isConnected = false;
-  pendingPredicts = [];
+}
+
+export function isModelLoaded(): boolean {
+  // Selalu return true karena REST API bersifat stateless
+  return true;
+}
+
+export function disposeModel(): void {
+  // Kosongkan fungsi ini karena tidak ada koneksi WebSocket yang perlu ditutup
 }
