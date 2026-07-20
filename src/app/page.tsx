@@ -38,17 +38,6 @@ const SPOK_SENTENCES = [
     ],
   },
   {
-    kalimat: "Ibu siapkan kue malam",
-    spok: { S: "Ibu", P: "Siapkan", O: "Kue", K: "Malam" },
-    words: [
-      { word: "Ibu", role: "S" },
-      { word: "Siap", role: "P" },
-      { word: "Kan", role: "P" },
-      { word: "Kue", role: "O" },
-      { word: "Malam", role: "K" },
-    ],
-  },
-  {
     kalimat: "Kakak makan obat agar kuat",
     spok: { S: "Kakak", P: "Makan", O: "Obat", K: "Agar Kuat" },
     words: [
@@ -57,6 +46,17 @@ const SPOK_SENTENCES = [
       { word: "Obat", role: "O" },
       { word: "Agar", role: "K" },
       { word: "Kuat", role: "K" },
+    ],
+  },
+   {
+    kalimat: "Ibu siapkan kue malam",
+    spok: { S: "Ibu", P: "Siapkan", O: "Kue", K: "Malam" },
+    words: [
+      { word: "Ibu", role: "S" },
+      { word: "Siap", role: "P" },
+      { word: "Kan", role: "P" },
+      { word: "Kue", role: "O" },
+      { word: "Malam", role: "K" },
     ],
   },
   {
